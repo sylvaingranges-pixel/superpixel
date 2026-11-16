@@ -15,6 +15,7 @@ import gradio as gr
 import numpy as np
 
 from .export import crop, preview, save_jpeg, save_tiff16, to_uint8
+from .dng_io import RAW_EXTENSIONS
 from .gpu import detect_gpu, in_colab
 from .params import FusionParams
 from .pipeline import BurstError, GpuUnavailable, analyze, fuse_burst, load_stack, resolve_paths
@@ -27,13 +28,14 @@ _MAX_RESULTS = 2
 SCALES = {"1x": 1.0, "1.5x": 1.5, "2x": 2.0}
 
 INTRO = """
-# drone-burst-sr — super-résolution de rafales DNG
+# drone-burst-sr — super-résolution de rafales RAW
 
-Fusionne une rafale de ~10 photos RAW prises en vol stationnaire (DJI Mini 4 Pro) avec
+Fusionne une rafale de ~10 photos RAW (drone DJI en vol stationnaire, ou hybride à main levée
+comme le Sony α7 IV) avec
 l'algorithme *Handheld Multi-Frame Super-Resolution* (Wronski et al. 2019), implémentation
 IPOL de Lafenetre, Facciolo & Eboli.
 
-> **Conseil** : le mode **12 MP** (vrai Bayer) donne le meilleur gain. En 48 MP, le capteur
+> **Drone DJI** : le mode **12 MP** (vrai Bayer) donne le meilleur gain. En 48 MP, le capteur
 > Quad Bayer est remosaïqué par le drone : détails en partie interpolés, gain faible.
 """
 
@@ -50,7 +52,7 @@ def _paths(files, folder: str) -> list[Path]:
     if folder and folder.strip():
         return resolve_paths(Path(folder.strip()).expanduser())
     if not files:
-        raise gr.Error("Déposez les fichiers DNG de la rafale (ou indiquez un dossier).")
+        raise gr.Error("Déposez les fichiers RAW de la rafale (ou indiquez un dossier).")
     return resolve_paths([getattr(f, "name", f) for f in files])
 
 
@@ -140,8 +142,9 @@ def build_app(engine_factory=None) -> gr.Blocks:
 
         with gr.Row():
             with gr.Column(scale=1):
-                files = gr.File(label="Rafale DNG (glisser-déposer plusieurs fichiers)",
-                                file_count="multiple", file_types=[".dng", ".DNG"], type="filepath")
+                files = gr.File(label="Rafale RAW : DNG, ARW (Sony)… (glisser-déposer plusieurs fichiers)",
+                                file_count="multiple", type="filepath",
+                                file_types=[e for x in RAW_EXTENSIONS for e in (x, x.upper())])
                 folder = gr.Textbox(label="… ou dossier sur le serveur (ex. Google Drive monté dans Colab)",
                                     placeholder="/content/drive/MyDrive/rafale")
                 analyze_btn = gr.Button("1. Analyser la rafale")

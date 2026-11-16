@@ -54,3 +54,13 @@ def test_brightness_check():
     assert check_brightness([0.30, 0.31, 0.29]) == []
     issues = check_brightness([0.30, 0.30, 0.40], ["a.DNG", "b.DNG", "c.DNG"])
     assert issues and "c.DNG" in issues[0].message and "b.DNG" not in issues[0].message
+
+
+def test_camera_gets_handheld_advice_not_quad_bayer(tmp_path, monkeypatch):
+    import drone_burst_sr.dng_io as dng_io
+
+    monkeypatch.setattr(dng_io, "QUAD_BAYER_MIN_MEGAPIXELS", 0.001)
+    paths = [_write(tmp_path, f"DSC{k}.ARW", make="SONY", model="ILCE-7M4") for k in range(4)]
+    issues = validate_burst(read_burst_info(paths))
+    text = " ".join(i.message for i in issues)
+    assert "48 MP" not in text and "main levée" in text

@@ -12,7 +12,7 @@ import numpy as np
 
 from . import baseline as baseline_mod
 from .cfa import rgb_from_rggb, to_rggb
-from .dng_io import FrameInfo, list_dng_files, load_normalized, read_burst_info
+from .dng_io import FrameInfo, is_raw_file, list_raw_files, load_normalized, read_burst_info
 from .gpu import GpuStatus, detect_gpu
 from .noise import NoiseModel, resolve_noise_model
 from .params import FusionParams
@@ -54,14 +54,14 @@ def _noop(_f: float, _m: str) -> None:
 # --------------------------------------------------------------------------- #
 def resolve_paths(source: str | Path | Sequence[str | Path]) -> list[Path]:
     if isinstance(source, (str, Path)) and Path(source).is_dir():
-        paths = list_dng_files(source)
+        paths = list_raw_files(source)
     elif isinstance(source, (str, Path)):
         paths = [Path(source)]
     else:  # liste de fichiers (ex. téléversés dans des dossiers temporaires) : tri par nom
         paths = sorted((Path(p) for p in source), key=lambda p: (p.name.lower(), str(p)))
-    paths = [p for p in paths if p.suffix.lower() == ".dng"]
+    paths = [p for p in paths if is_raw_file(p)]
     if not paths:
-        raise FileNotFoundError("Aucun fichier .dng trouvé.")
+        raise FileNotFoundError("Aucun fichier RAW trouvé (.dng, .arw, .nef, .cr2…).")
     return paths
 
 

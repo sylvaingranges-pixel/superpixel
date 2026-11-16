@@ -68,3 +68,24 @@ def test_rawpy_baseline_matches_normalisation(tmp_path):
     x = load_normalized(info)
     ratio = np.median(lin[0::2, 0::2, 0] / np.maximum(x[0::2, 0::2], 1e-3))
     assert ratio == pytest.approx(1.0, abs=0.01)  # même échelle noir/blanc que la fusion
+
+
+def test_sony_arw_and_other_raw_extensions_are_listed(tmp_path):
+    raw = np.full((64, 64), 1000, np.uint16)
+    for name in ("DSC00001.ARW", "DSC00002.arw", "DSC00003.ARW"):
+        write_dng(tmp_path / name, raw, make="SONY", model="ILCE-7M4")  # contenu lu par LibRaw
+    write_dng(tmp_path / "DSC00001.dng", raw)  # conversion DNG d'une des photos : ignorée
+    files = list_dng_files(tmp_path)
+    assert [p.name for p in files] == ["DSC00001.ARW", "DSC00002.arw", "DSC00003.ARW"]
+    assert read_frame_info(files[0]).make == "SONY"
+
+
+def test_quad_bayer_rule_only_applies_to_dji(tmp_path, monkeypatch):
+    import drone_burst_sr.dng_io as dng_io
+
+    monkeypatch.setattr(dng_io, "QUAD_BAYER_MIN_MEGAPIXELS", 0.001)  # 64x64 « dépasse » le seuil
+    raw = np.full((64, 64), 1000, np.uint16)
+    sony = read_frame_info(write_dng(tmp_path / "a.ARW", raw, make="SONY", model="ILCE-7M4"))
+    dji = read_frame_info(write_dng(tmp_path / "b.DNG", raw, make="DJI", model="FC8482"))
+    assert not sony.is_quad_bayer_mode and "Quad" not in sony.mode_label
+    assert dji.is_quad_bayer_mode

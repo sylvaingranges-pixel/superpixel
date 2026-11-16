@@ -1,7 +1,7 @@
 # drone-burst-sr
 
-**Super-résolution et débruitage multi-images pour rafales RAW (DNG) de drone**, pensé pour le
-DJI Mini 4 Pro.
+**Super-résolution et débruitage multi-images pour rafales RAW**, pensé pour le drone
+DJI Mini 4 Pro (DNG) et utilisable aussi avec un hybride comme le **Sony α7 IV** (ARW, voir § 4.1).
 
 On prend une rafale d'une dizaine de photos RAW en vol stationnaire. Le léger dérapage du drone
 décale chaque image d'une fraction de pixel. En fusionnant ces images, on obtient une image plus
@@ -14,7 +14,7 @@ SIGGRAPH 2019, celui du Pixel 3), dans l'implémentation publiée sur IPOL en 20
 Ce projet **ne le réécrit pas**. Il l'utilise comme dépendance et l'entoure de ce qui manque
 pour un usage drone :
 
-- lecture et contrôle des DNG ;
+- lecture et contrôle des RAW (DNG, ARW Sony, et autres formats Bayer lus par LibRaw) ;
 - modèle de bruit adapté au capteur ;
 - traitement par tuiles pour la mémoire ;
 - rendu couleur identique avant/après ;
@@ -28,6 +28,7 @@ pour un usage drone :
 2. [Installation](#2-installation)
 3. [Utilisation](#3-utilisation)
 4. [Conseils de prise de vue au drone](#4-conseils-de-prise-de-vue-au-drone)
+   (et [avec un Sony α7 IV](#41-avec-un-sony-α7-iv-ou-un-autre-hybride))
 5. [Limites réalistes](#5-limites-réalistes)
 6. [Détails techniques](#6-détails-techniques)
 7. [Tests](#7-tests)
@@ -196,6 +197,35 @@ exiftool -a -G1 -CFAPattern2 -BlackLevel -WhiteLevel -AsShotNeutral -ColorMatrix
   l'alignement local peut échouer. Volez assez **haut et loin** du sujet, et méfiez-vous des
   scènes à fort relief proche.
 - Évitez le **zoom numérique** (déjà interpolé) et gardez la même focale.
+
+### 4.1 Avec un Sony α7 IV (ou un autre hybride)
+
+Les fichiers **ARW** sont acceptés directement, sans conversion en DNG. Les autres RAW Bayer lus
+par LibRaw (NEF, CR2, ORF, RW2, PEF) aussi. Le X-Trans de Fujifilm (RAF) n'est pas un capteur
+Bayer : il est refusé.
+
+Le principe est celui du Pixel de Google : **à main levée**, le tremblement naturel entre les
+images d'une rafale fournit les décalages sous-pixel.
+
+- **Rafale à main levée**, mode continu rapide, 8 à 15 images. La stabilisation (SteadyShot) peut
+  rester active : il reste toujours assez de micro-décalages. **Sur trépied**, les images sont
+  identiques au pixel près : la fusion débruite mais n'ajoute pas de détails.
+- **Exposition manuelle**, ISO fixe, **balance des blancs fixe**. Vitesse d'au moins
+  1/(2 × focale) pour éviter le flou de bougé. L'outil prend la plus nette comme référence.
+- **Format RAW** : *non compressé* ou *compressé sans perte*, en **taille L**. Évitez le RAW
+  *compressé* (avec perte), dont les artefacts près des contours contrastés gênent l'alignement.
+  Les tailles M/S, si le boîtier les propose, ne sont pas des données Bayer brutes : refusées.
+- **Couleurs** : pas de matrice DNG dans un ARW. On utilise la matrice de l'α7 IV intégrée à
+  LibRaw.
+- **Bruit** : un ARW n'a pas de tag NoiseProfile. La courbe est **estimée sur la rafale**
+  automatiquement (§ 6.2). Vous pouvez aussi l'estimer une fois par ISO
+  (`python -m drone_burst_sr.noise`) et la réutiliser avec `--alpha/--beta`.
+- **Gain attendu** : l'α7 IV a un **filtre passe-bas optique**, qui atténue déjà les fréquences
+  que la super-résolution cherche à reconstruire. Le gain en résolution sera plus modeste qu'avec
+  un capteur sans filtre (α7R, la plupart des drones). Le débruitage (≈ √N) reste entier, et
+  c'est souvent l'intérêt principal en basse lumière.
+- **Mémoire** (33 MP, 10 images, estimations) : ×1 ≈ 4,3 Go de RAM et 3,6 Go de VRAM ;
+  ×2 (131 MP) ≈ 6,9 Go de RAM et 6,4 Go de VRAM. Ça passe sur le T4 de Colab.
 
 ## 5. Limites réalistes
 

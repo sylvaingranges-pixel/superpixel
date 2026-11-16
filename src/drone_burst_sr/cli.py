@@ -23,8 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     d = FusionParams()
     p = argparse.ArgumentParser(
         prog="python -m drone_burst_sr",
-        description="Super-résolution multi-images d'une rafale DNG (DJI Mini 4 Pro).")
-    p.add_argument("--input", "-i", required=True, type=Path, help="dossier de la rafale (.DNG)")
+        description="Super-résolution multi-images d'une rafale RAW (DNG DJI, ARW Sony…).")
+    p.add_argument("--input", "-i", required=True, type=Path, help="dossier de la rafale (.DNG, .ARW…)")
     p.add_argument("--out", "-o", type=Path, default=Path("result.tif"), help="TIFF 16 bits de sortie")
     p.add_argument("--scale", type=float, default=d.scale, choices=[1.0, 1.5, 2.0])
     p.add_argument("--jpeg", type=Path, help="aperçu JPEG (défaut : même nom que --out en .jpg)")

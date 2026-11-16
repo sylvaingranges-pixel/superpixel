@@ -19,8 +19,14 @@ from typing import Iterable, Sequence
 import numpy as np
 
 # Le Mini 4 Pro produit 4032x3024 (12 MP, vrai Bayer) ou 8064x6048
-# (48 MP, Quad Bayer remosaïqué en Bayer par l'appareil).
+# (48 MP, Quad Bayer remosaïqué en Bayer par l'appareil). La règle ne vaut que pour
+# les drones DJI : un hybride de 33 MP (Sony α7 IV) est un vrai Bayer.
 QUAD_BAYER_MIN_MEGAPIXELS = 30.0
+QUAD_BAYER_MAKES = ("DJI",)
+
+# Formats RAW Bayer lus par rawpy/LibRaw et dont les tags EXIF sont lisibles par exifread
+# (conteneurs TIFF). Le X-Trans de Fujifilm (.RAF) n'est pas Bayer : refusé à la lecture.
+RAW_EXTENSIONS = (".dng", ".arw", ".nef", ".cr2", ".orf", ".rw2", ".pef")
 
 # Illuminants DNG ayant une température de couleur définie (même logique que
 # l'amont : on prend la matrice dont l'illuminant est le plus proche de D65).
@@ -67,14 +73,15 @@ class FrameInfo:
 
     @property
     def is_quad_bayer_mode(self) -> bool:
-        return self.megapixels >= QUAD_BAYER_MIN_MEGAPIXELS
+        is_dji = any(m.lower() in self.make.lower() for m in QUAD_BAYER_MAKES)
+        return is_dji and self.megapixels >= QUAD_BAYER_MIN_MEGAPIXELS
 
     @property
     def mode_label(self) -> str:
         mp = f"{self.megapixels:.0f}" if self.megapixels >= 10 else f"{self.megapixels:.1f}"
         if self.is_quad_bayer_mode:
             return f"{mp} MP (Quad Bayer remosaïqué)"
-        return f"{mp} MP (Bayer natif)"
+        return f"{mp} MP (Bayer)"
 
     @property
     def cfa_string(self) -> str:
@@ -112,13 +119,28 @@ def _fmt_exposure(t: float | None) -> str:
 # --------------------------------------------------------------------------- #
 # Fichiers
 # --------------------------------------------------------------------------- #
-def list_dng_files(folder: str | Path) -> list[Path]:
-    """Liste les DNG d'un dossier, sans tenir compte de la casse (DJI écrit ``.DNG``)."""
+def is_raw_file(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in RAW_EXTENSIONS
+
+
+def list_raw_files(folder: str | Path) -> list[Path]:
+    """Liste les RAW (DNG, ARW…) d'un dossier, sans tenir compte de la casse (DJI écrit ``.DNG``).
+
+    Si le dossier mélange plusieurs formats, seul le plus fréquent est gardé (ex. des DNG
+    convertis à côté des ARW d'origine) pour ne pas fusionner deux fois la même photo.
+    """
     folder = Path(folder)
     if not folder.is_dir():
         raise FileNotFoundError(f"Dossier introuvable : {folder}")
-    files = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".dng")
+    files = sorted(p for p in folder.iterdir() if p.is_file() and is_raw_file(p))
+    exts = [p.suffix.lower() for p in files]
+    if len(set(exts)) > 1:
+        main = max(set(exts), key=exts.count)
+        files = [p for p in files if p.suffix.lower() == main]
     return files
+
+
+list_dng_files = list_raw_files  # compatibilité
 
 
 # --------------------------------------------------------------------------- #

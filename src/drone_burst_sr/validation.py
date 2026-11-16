@@ -35,6 +35,13 @@ QUAD_BAYER_NOTE = (
 )
 
 
+HANDHELD_NOTE = (
+    "Appareil photo : la super-résolution a besoin de petits décalages entre les images. "
+    "Photographiez la rafale à main levée (le tremblement naturel suffit, stabilisation "
+    "activée ou non) ; sur trépied, les images sont identiques et seul le débruitage opère."
+)
+
+
 def _rel_spread(values: Sequence[float]) -> float:
     v = np.asarray(values, dtype=np.float64)
     if v.size == 0 or np.max(np.abs(v)) == 0:
@@ -100,8 +107,10 @@ def validate_burst(infos: Sequence[FrameInfo]) -> list[Issue]:
 
     if ref.is_quad_bayer_mode:
         issues.append(Issue("avertissement", QUAD_BAYER_NOTE))
-    else:
+    elif "dji" in ref.make.lower():
         issues.append(Issue("info", f"Mode {ref.mode_label} : c'est le mode qui donne le meilleur gain."))
+    else:
+        issues.append(Issue("info", HANDHELD_NOTE))
 
     if ref.noise_profile is None:
         issues.append(Issue("info", "Pas de tag NoiseProfile : la courbe de bruit sera estimée "
