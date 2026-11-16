@@ -1,0 +1,47 @@
+[project]
+name = "drone-burst-sr"
+version = "0.1.0"
+description = "Super-résolution multi-images pour rafales DNG de drone (DJI Mini 4 Pro), basée sur l'implémentation IPOL de Handheld Multi-Frame Super-Resolution"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<2.5",
+    "scipy>=1.11",
+    "rawpy>=0.21",
+    "exifread>=3.0",
+    "tifffile>=2023.7",
+    "opencv-python-headless>=4.8",
+    "pillow>=10",
+    "psutil>=5.9",
+    "gradio>=6,<7",
+]
+
+[project.optional-dependencies]
+# L'algorithme lui-même (Numba + CUDA + PyTorch). Nécessite un GPU NVIDIA.
+# Commit figé : on ne monte de version que volontairement, tests à l'appui.
+gpu = [
+    "handheld-super-resolution @ git+https://github.com/Jamy-L/Handheld-Multi-Frame-Super-Resolution@27c4655ae4752898e0ae6e9737697c4d89c95226",
+]
+dev = ["pytest>=8"]
+
+[project.scripts]
+drone-burst-sr = "drone_burst_sr.cli:main"
+drone-burst-sr-ui = "drone_burst_sr.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/drone_burst_sr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: nécessite un GPU NVIDIA et l'extra [gpu] (ignoré automatiquement sinon)",
+    "upstream: nécessite le paquet handheld-super-resolution installé (sans GPU)",
+]
