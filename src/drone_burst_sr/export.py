@@ -14,6 +14,13 @@ def to_uint8(img16: np.ndarray) -> np.ndarray:
     return ((img16.astype(np.uint32) + 128) // 257).astype(np.uint8)
 
 
+def _ascii(text: str) -> str:
+    """Les chaînes TIFF doivent être en ASCII 7 bits : on retire accents et symboles."""
+    import unicodedata
+
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii").strip()
+
+
 def save_tiff16(path: str | Path, img16: np.ndarray, description: str = "") -> Path:
     """TIFF RVB 16 bits, non compressé (compatibilité maximale), sRGB."""
     import tifffile
@@ -25,7 +32,7 @@ def save_tiff16(path: str | Path, img16: np.ndarray, description: str = "") -> P
     tifffile.imwrite(
         path, img16, photometric="rgb", compression=None,
         bigtiff=img16.nbytes > 3.9 * 1024 ** 3,
-        description=description or "drone-burst-sr (sRGB, 16 bits)",
+        description=_ascii(description) or "drone-burst-sr (sRGB, 16 bits)",
         software=f"drone-burst-sr {__version__}", metadata=None,
     )
     return path

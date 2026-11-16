@@ -57,8 +57,8 @@ def resolve_paths(source: str | Path | Sequence[str | Path]) -> list[Path]:
         paths = list_dng_files(source)
     elif isinstance(source, (str, Path)):
         paths = [Path(source)]
-    else:
-        paths = sorted(Path(p) for p in source)
+    else:  # liste de fichiers (ex. téléversés dans des dossiers temporaires) : tri par nom
+        paths = sorted((Path(p) for p in source), key=lambda p: (p.name.lower(), str(p)))
     paths = [p for p in paths if p.suffix.lower() == ".dng"]
     if not paths:
         raise FileNotFoundError("Aucun fichier .dng trouvé.")
@@ -140,7 +140,8 @@ def load_stack(source, reference: str = "sharpest", max_frames: int | None = Non
     for k, info in enumerate(infos):
         progress(0.12 * k / n, f"Lecture {info.path.name} ({k + 1}/{n})")
         load_normalized(info, out=stack[k])
-    issues += check_brightness([float(f[::8, ::8].mean()) for f in stack])
+    issues += check_brightness([float(f[::8, ::8].mean()) for f in stack],
+                               [i.path.name for i in infos])
 
     sharp = [_sharpness(f) for f in stack]
     r = int(np.argmax(sharp)) if reference == "sharpest" else 0

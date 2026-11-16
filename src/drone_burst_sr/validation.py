@@ -111,19 +111,21 @@ def validate_burst(infos: Sequence[FrameInfo]) -> list[Issue]:
     return issues
 
 
-def check_brightness(means: Sequence[float], tol: float = 0.08) -> list[Issue]:
-    """Compare la luminosité moyenne mesurée des images (détecte l'auto-exposition)."""
+def check_brightness(means: Sequence[float], names: Sequence[str] | None = None,
+                     tol: float = 0.08) -> list[Issue]:
+    """Compare la luminosité moyenne mesurée des images à la référence (auto-exposition ?)."""
     m = np.asarray(means, dtype=np.float64)
     ref = m[0] if m[0] > 0 else np.median(m)
     if ref <= 0:
         return []
     dev = np.abs(m / ref - 1)
-    bad = [k + 1 for k in np.nonzero(dev > tol)[0]]
+    labels = list(names) if names is not None else [str(k + 1) for k in range(len(m))]
+    bad = [labels[int(k)] for k in np.nonzero(dev > tol)[0]]
     if bad:
         return [Issue("avertissement",
-                      f"Luminosité moyenne différente de plus de {tol:.0%} pour les images "
-                      f"{bad} (variation max {dev.max():.0%}). Exposition auto, scintillement "
-                      "ou changement de lumière ? Ces images pèseront peu dans la fusion.")]
+                      f"Luminosité moyenne différente de plus de {tol:.0%} pour : {', '.join(bad)} "
+                      f"(écart max {dev.max():.0%}). Exposition auto, scintillement ou changement "
+                      "de lumière ? Ces images pèseront peu dans la fusion.")]
     return []
 
 
