@@ -67,8 +67,14 @@ Python **3.11** (3.12 et 3.13 fonctionnent aussi). Toutes les dépendances sont 
 1. Ouvrez `notebooks/drone_burst_sr_colab.ipynb` dans Colab (*Fichier → Importer le notebook →
    GitHub*, ou glissez le fichier).
 2. *Exécution → Modifier le type d'exécution → **GPU T4***.
-3. Si le dépôt est privé, ajoutez un jeton GitHub en lecture seule dans les *Secrets* Colab sous le
-   nom `GITHUB_TOKEN`.
+3. Si le dépôt est **privé**, deux possibilités :
+   - **sans jeton** : *Code → Download ZIP* sur GitHub, déposez le ZIP dans Google Drive et
+     indiquez son chemin dans la variable `LOCAL_SOURCE` du notebook ;
+   - **avec jeton** : un jeton GitHub en lecture seule dans les *Secrets* Colab, sous le nom
+     `GITHUB_TOKEN`.
+
+   La connexion GitHub de Colab ne sert qu'à ouvrir et enregistrer des notebooks. Elle ne
+   permet pas à `pip` de lire un dépôt privé.
 4. Exécutez les cellules dans l'ordre :
    - installation ;
    - vérification CUDA (bascule automatique en CUDA 12 si le pilote de Colab est ancien) ;
