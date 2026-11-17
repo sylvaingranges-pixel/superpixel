@@ -1,6 +1,6 @@
 [project]
 name = "drone-burst-sr"
-version = "0.1.0"
+version = "0.2.0"
 description = "Super-résolution multi-images pour rafales DNG de drone (DJI Mini 4 Pro), basée sur l'implémentation IPOL de Handheld Multi-Frame Super-Resolution"
 readme = "README.md"
 license = { file = "LICENSE" }

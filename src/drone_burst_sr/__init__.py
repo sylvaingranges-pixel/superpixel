@@ -7,4 +7,4 @@ adaptateur : lecture/contrôle des DNG, modèle de bruit, tuiles, rendu,
 interface web et ligne de commande.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
