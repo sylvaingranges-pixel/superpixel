@@ -242,6 +242,9 @@ images d'une rafale fournit les décalages sous-pixel.
   près ×3 pour 10 images (environ 1,5 IL). Elle est moindre dans les zones rejetées (mouvement,
   parallaxe) et en ×2, où chaque pixel de sortie reçoit moins d'échantillons.
 - **Mode 48 MP** : gain faible (Quad Bayer remosaïqué). Utilisez-le en ×1 comme débruitage.
+- **Motifs répétitifs** (rangées de panneaux solaires, tuiles, rangs de culture, grillages) :
+  l'alignement local, bloc par bloc, peut se caler sur la mauvaise période. On voit alors du
+  moiré coloré et des marches en escalier, observés sur la mire de l'auto-test.
 - **Couleur** : rendu simple (balance des blancs « tel que pris », matrice DNG, sRGB, sans courbe
   de tons). Le TIFF 16 bits est fait pour être retravaillé (Lightroom, darktable…).
   L'orientation EXIF est appliquée.
@@ -400,17 +403,20 @@ Ce qui est couvert :
 - chaîne complète avec un moteur factice CPU.
 
 Le **test GPU** (`python -m drone_burst_sr.selftest`) génère une rafale synthétique à décalages
-sous-pixel connus et la compare, **zone par zone**, à une seule image dématricée par rawpy puis
-agrandie. Il vérifie trois choses :
+sous-pixel connus et la compare à une seule image dématricée par rawpy puis agrandie. Il mesure :
 
-- les lignes plus fines que la limite de Nyquist d'une image seule sont mieux restituées
-  (PSNR et part du détail fin retrouvée) ;
-- le bruit des aplats baisse ;
-- les détails déjà résolus ne se dégradent pas.
+- le **détail juste** restitué sur une texture fine non périodique, au-delà de la limite de
+  Nyquist d'une image seule. C'est une corrélation avec la vérité dans la bande 0,45–0,85
+  cycle/pixel : elle ignore le flou et ne compte ni le moiré ni le bruit ;
+- le **bruit** dans les aplats.
 
-Il refait aussi la fusion sans robustesse, pour repérer un rejet excessif, et écrit une planche
-de comparaison `selftest_comparaison.png`. Le rapport affiche le **taux de fusion** : la part des
-autres images réellement utilisée. La CI GitHub Actions lance les
+Il compare trois fusions : réglages par défaut, sans robustesse (pour repérer un rejet excessif),
+et une **référence** qui connaît les décalages exacts (le gain atteignable avec un alignement
+parfait). Il écrit aussi une planche `selftest_comparaison.png`, et le rapport affiche le
+**taux de fusion** : la part des autres images réellement utilisée.
+
+Sur cette rafale, la référence à décalages exacts passe de 0,34 (image seule) à 0,61 de détail
+juste et gagne environ 11 dB de PSNR dans les aplats : c'est ce qui valide la mesure elle-même. La CI GitHub Actions lance les
 tests CPU sous Ubuntu et Windows.
 
 ## 8. Licence et citation

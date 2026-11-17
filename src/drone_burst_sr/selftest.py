@@ -1,16 +1,18 @@
 """Auto-test de bout en bout sur une rafale synthétique (décalages sous-pixel connus).
 
 ``python -m drone_burst_sr.selftest`` (GPU requis) génère une rafale DNG, la fusionne à ×2
-et la compare, zone par zone, à une seule image dématricée par rawpy puis agrandie :
+et la compare à une seule image dématricée par rawpy puis agrandie :
 
-- **super_resolution** : réseaux et mire entre 0,45 et 0,85 cycle/pixel, au-delà de la
-  limite de Nyquist d'une image seule. Seule la fusion peut y restituer le détail ;
-- **aplats** : zones uniformes, où l'on mesure le débruitage ;
-- **basses_freq** : détails qu'une image seule résout déjà (contrôle : pas de dégradation).
+- **détail** (texture fine non périodique) : corrélation avec la vérité
+  entre 0,45 et 0,85 cycle/pixel, au-delà de la limite de Nyquist d'une image seule. Cette
+  mesure ignore le flou et ne compte que le détail juste (pas le moiré ni le bruit) ;
+- **aplats** : PSNR dans les zones uniformes, c'est-à-dire le débruitage ;
+- **basses fréquences** : PSNR sur la mire (à titre indicatif : une fusion est plus douce
+  qu'un agrandissement Lanczos, l'accentuation du rendu compense).
 
-La fusion est faite deux fois : réglages par défaut, puis robustesse désactivée. Si la
-seconde est nettement meilleure, la robustesse rejette trop d'images. Une planche de
-comparaison PNG est écrite à côté.
+Trois fusions sont comparées : réglages par défaut, robustesse désactivée, et une
+**référence** CPU qui connaît les décalages exacts (gain atteignable avec un alignement
+parfait). Une planche de comparaison PNG est écrite à côté.
 """
 
 from __future__ import annotations
@@ -23,16 +25,17 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .render import linear_to_srgb
-from .synthetic import SyntheticBurst, make_burst, scene_regions, write_burst
+from .render import RenderParams, linear_to_srgb, render
+from .synthetic import (GRATING_U, SR_BAND, TEXTURE_V, SyntheticBurst, make_burst,
+                        scene_regions, shift_and_add_reference, write_burst)
 
-REGIONS = ("super_resolution", "aplats", "basses_freq")
+PSNR_REGIONS = ("aplats", "basses_freq")
 
 
 @dataclass
 class Score:
-    psnr: dict          # PSNR (dB) par zone, + "global"
-    hf_ratio: float     # part du détail fin de la vérité terrain retrouvée (zone SR)
+    psnr: dict          # PSNR (dB) : "global", "aplats" (bruit), "basses_freq"
+    corr: dict          # corrélation avec la vérité dans la bande SR : "texture"
 
 
 def _gray(x: np.ndarray) -> np.ndarray:
@@ -54,37 +57,72 @@ def _psnr(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None) -> float
     return 10 * np.log10(1.0 / max(mse, 1e-12))
 
 
-def score(img: np.ndarray, gt: np.ndarray, regions: dict[str, np.ndarray], border: int = 16) -> Score:
-    """PSNR par zone et part du détail fin retrouvé, après recalage, en sRGB [0, 1]."""
+def band_correlation(img: np.ndarray, gt: np.ndarray, box: tuple[int, int, int, int],
+                     scale: float, band: tuple[float, float] = SR_BAND) -> float:
+    """Corrélation entre ``img`` et la vérité, limitée à une bande de fréquences.
+
+    ``band`` est en cycles par pixel capteur. Insensible au flou (un filtre de phase nulle ne
+    change pas la corrélation) : elle mesure si le détail restitué est le *bon* détail, et non
+    du moiré ou du bruit. 1 = parfait, ~0 = aucun détail juste dans cette bande.
+    """
+    y0, y1, x0, x1 = box
+    a, g = _gray(img[y0:y1, x0:x1]), _gray(gt[y0:y1, x0:x1])
+    win = np.outer(np.hanning(a.shape[0]), np.hanning(a.shape[1]))
+    A = np.fft.fft2((a - a.mean()) * win)
+    G = np.fft.fft2((g - g.mean()) * win)
+    fy = np.fft.fftfreq(a.shape[0])[:, None] * scale
+    fx = np.fft.fftfreq(a.shape[1])[None, :] * scale
+    f = np.hypot(fy, fx)
+    m = (f >= band[0]) & (f <= band[1])
+    den = np.sqrt(np.sum(np.abs(A[m]) ** 2) * np.sum(np.abs(G[m]) ** 2))
+    return float(np.real(np.sum(A[m] * np.conj(G[m]))) / max(den, 1e-12))
+
+
+def _boxes(h: int, w: int) -> dict[str, tuple[int, int, int, int]]:
+    """Rectangle de mesure du détail (pixels de sortie) : la texture fine.
+
+    Le réseau de lignes n'est pas mesuré : sur un motif périodique, la corrélation de bande
+    récompense aussi des répliques parasites (un moteur sans fusion y obtient un bon score).
+    Il reste visible sur la planche de comparaison.
+    """
+    pad = 16
+    u0, u1 = GRATING_U
+    return {"texture": (int(TEXTURE_V[0] * h) + pad, int(TEXTURE_V[1] * h) - pad,
+                        int(u0 * w) + pad, int(u1 * w) - pad)}
+
+
+def score(img: np.ndarray, gt: np.ndarray, regions: dict[str, np.ndarray], scale: float,
+          border: int = 16) -> Score:
     img = _register(img, gt)
     keep = np.zeros(gt.shape[:2], bool)
     keep[border:-border, border:-border] = True
     psnr = {"global": _psnr(img, gt, keep)}
-    for name in REGIONS:
+    for name in PSNR_REGIONS:
         m = regions[name] & keep
         psnr[name] = _psnr(img, gt, m) if m.any() else float("nan")
-    lap_a = cv2.Laplacian(_gray(img), cv2.CV_32F)[regions["super_resolution"] & keep]
-    lap_b = cv2.Laplacian(_gray(gt), cv2.CV_32F)[regions["super_resolution"] & keep]
-    lap_b = lap_b - lap_b.mean()
-    # Projection sur le détail réel : le bruit et le moiré (non corrélés à la vérité) ne comptent pas.
-    hf = float(np.dot(lap_a - lap_a.mean(), lap_b) / max(np.dot(lap_b, lap_b), 1e-12))
-    return Score(psnr, hf)
+    corr = {k: band_correlation(img, gt, box, scale) for k, box in _boxes(*gt.shape[:2]).items()}
+    return Score(psnr, corr)
 
 
 def evaluate(fused16: np.ndarray, single16: np.ndarray, burst: SyntheticBurst, scale: float) -> dict:
     gt = linear_to_srgb(burst.ground_truth(scale)).astype(np.float32)
     lr_h, lr_w = burst.raws[0].shape
     regions = scene_regions(gt.shape[0], gt.shape[1], lr_h, lr_w)
-    f = score(fused16.astype(np.float32) / 65535, gt, regions)
-    s = score(single16.astype(np.float32) / 65535, gt, regions)
+    f = score(fused16.astype(np.float32) / 65535, gt, regions, scale)
+    s = score(single16.astype(np.float32) / 65535, gt, regions, scale)
     gains = {k: f.psnr[k] - s.psnr[k] for k in f.psnr}
+    corr_gain = {k: f.corr[k] - s.corr[k] for k in f.corr}
     return {
-        "fusion": f, "image_seule": s, "gains_db": gains,
-        "gain_psnr_db": gains["super_resolution"],
-        # Critères : détail fin nettement mieux restitué, bruit réduit, pas de dégradation ailleurs.
-        "plus_net": (gains["super_resolution"] > 0.5 and f.hf_ratio > s.hf_ratio
-                     and gains["aplats"] > 0.5 and gains["basses_freq"] > -0.5),
+        "fusion": f, "image_seule": s, "gains_db": gains, "gains_corr": corr_gain,
+        "gain_psnr_db": gains["aplats"],
+        # Critères : du détail juste au-delà de Nyquist sur une texture réaliste, et moins de bruit.
+        "plus_net": corr_gain["texture"] > 0.10 and gains["aplats"] > 0.5,
     }
+
+
+def reference_fusion(burst: SyntheticBurst, scale: float) -> np.ndarray:
+    """Fusion de référence connaissant les décalages exacts, rendue en sRGB 16 bits."""
+    return render(shift_and_add_reference(burst, scale), RenderParams(sharpen_amount=0.0))
 
 
 def contact_sheet(path: Path, gt: np.ndarray, single16: np.ndarray, fusions: dict[str, np.ndarray],
@@ -144,40 +182,45 @@ def run_selftest(scale: float = 2.0, n_frames: int = 10, height: int = 512, widt
         engine = engine_factory(params) if engine_factory else None
         results[name] = fuse_burst(loaded, params, engine=engine)
         metrics[name] = evaluate(results[name].fused, results[name].single, burst, scale)
+    ref16 = reference_fusion(burst, scale)
+    metrics["référence (décalages exacts)"] = evaluate(ref16, results["fusion"].single, burst, scale)
     main = metrics["fusion"]
     main["rapport"] = results["fusion"].report()
     main["variantes"] = metrics
     if out_dir is not None:
         gt = linear_to_srgb(burst.ground_truth(scale)).astype(np.float32)
+        fusions = {k: r.fused for k, r in results.items()}
+        fusions["reference"] = ref16
         main["planche"] = contact_sheet(Path(out_dir) / "selftest_comparaison.png", gt,
-                                        results["fusion"].single,
-                                        {k: r.fused for k, r in results.items()}, burst, scale)
+                                        results["fusion"].single, fusions, burst, scale)
     if tmp is not None:
         tmp.cleanup()
     return main
 
 
 def format_report(m: dict) -> str:
-    lines = [m["rapport"], "", f"{'':18s}" + "".join(f"{k:>18s}" for k in ("global", *REGIONS)) + "   détail fin"]
-    single = m["image_seule"]
-    lines.append(f"{'image seule':18s}" + "".join(f"{single.psnr[k]:15.2f} dB" for k in ("global", *REGIONS))
-                 + f"   {single.hf_ratio:6.2f}")
-    for name, mm in m["variantes"].items():
-        f = mm["fusion"]
-        lines.append(f"{name:18s}" + "".join(f"{f.psnr[k]:15.2f} dB" for k in ("global", *REGIONS))
-                     + f"   {f.hf_ratio:6.2f}")
-    lines.append("")
-    g = m["gains_db"]
-    lines.append("Gains de la fusion : " + ", ".join(f"{k} {g[k]:+.2f} dB" for k in ("global", *REGIONS)))
-    if "sans robustesse" in m["variantes"]:
-        g2 = m["variantes"]["sans robustesse"]["gains_db"]
-        lines.append("Sans robustesse   : " + ", ".join(f"{k} {g2[k]:+.2f} dB" for k in ("global", *REGIONS)))
+    cols = ("global", *PSNR_REGIONS)
+    head = (f"{'':30s}" + "".join(f"{'PSNR ' + k:>18s}" for k in cols)
+            + f"{'détail texture':>16s}")
+    def row(name, sc):
+        return (f"{name:30s}" + "".join(f"{sc.psnr[k]:15.2f} dB" for k in cols)
+                + f"{sc.corr['texture']:16.2f}")
+    lines = [m["rapport"], "", head, row("image seule", m["image_seule"])]
+    lines += [row(name, mm["fusion"]) for name, mm in m["variantes"].items()]
+    lines += [
+        "",
+        "« détail texture » = corrélation avec la vérité entre 0,45 et 0,85 cycle/pixel, sur une",
+        "texture fine non périodique (au-delà de ce qu'une image seule peut résoudre). Insensible",
+        "au flou : 0 = moiré ou bruit, 1 = parfait. Réseau de lignes et mire : voir la planche.",
+        "La « référence » connaît les décalages exacts : c'est le gain atteignable avec un",
+        "alignement parfait.",
+    ]
     if "planche" in m:
         lines.append(f"Planche de comparaison : {m['planche']}")
-    lines.append("✅ La fusion restitue des détails au-delà d'une image seule et réduit le bruit."
+    lines.append("✅ La fusion restitue du détail juste au-delà d'une image seule et réduit le bruit."
                  if m["plus_net"] else
-                 "❌ La fusion ne bat pas l'image seule sur tous les critères : envoyez ce rapport "
-                 "et la planche PNG.")
+                 "❌ La fusion ne bat pas l'image seule sur la texture fine ou sur le bruit : envoyez "
+                 "ce rapport et la planche PNG.")
     return "\n".join(lines)
 
 

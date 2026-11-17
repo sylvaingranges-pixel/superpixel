@@ -26,7 +26,8 @@ STAR_CENTER = (0.5, 0.25)          # (v, u)
 STAR_RADIUS = 0.21                 # × min(hauteur, largeur)
 STAR_SPOKES = 96
 GRATING_V = (0.10, 0.42)           # réseau de lignes verticales (fréquence croissante selon u)
-GRATING_H_U = (0.58, 0.90)         # réseau de lignes horizontales (fréquence croissante selon v)
+TEXTURE_V = (0.58, 0.90)           # texture fine non périodique (comme toits, gravier, feuillage)
+GRATING_H_U = TEXTURE_V            # compatibilité
 GRATING_U = (0.55, 0.95)
 GRATING_F = (0.20, 0.85)           # cycles / pixel capteur ; > 0.5 = au-delà de Nyquist d'une image
 SR_BAND = (0.45, 0.85)             # bande où seule la fusion peut restituer le détail
@@ -52,20 +53,32 @@ def _layout(height: int, width: int, lr_h: int, lr_w: int):
     rad = np.hypot(dy, dx)
     star = rad < STAR_RADIUS * min(lr_h, lr_w)
     gv = (u >= GRATING_U[0]) & (u <= GRATING_U[1]) & (v >= GRATING_V[0]) & (v <= GRATING_V[1])
-    gh = (u >= GRATING_U[0]) & (u <= GRATING_U[1]) & (v >= GRATING_H_U[0]) & (v <= GRATING_H_U[1])
-    return u, v, dy, dx, rad, star, gv, gh
+    tex = (u >= GRATING_U[0]) & (u <= GRATING_U[1]) & (v >= TEXTURE_V[0]) & (v <= TEXTURE_V[1])
+    return u, v, dy, dx, rad, star, gv, tex
+
+
+def _fine_texture(height: int, width: int, factor: int, seed: int) -> np.ndarray:
+    """Texture aléatoire à large bande (spectre ∝ f^-0.5) jusqu'à 0,85 cycle/pixel capteur."""
+    rng = np.random.default_rng(seed + 1234)
+    noise = rng.standard_normal((height, width))
+    fy = np.fft.fftfreq(height)[:, None] * factor   # cycles / pixel capteur
+    fx = np.fft.rfftfreq(width)[None, :] * factor
+    f = np.hypot(fy, fx)
+    amp = np.where(f > 0.02, np.maximum(f, 0.02) ** -0.5, 0.0)
+    amp *= np.exp(-np.maximum(f - GRATING_F[1], 0) ** 2 / (2 * 0.03 ** 2))  # coupure douce à 0,85
+    tex = np.fft.irfft2(np.fft.rfft2(noise) * amp, s=(height, width))
+    return tex / tex.std()
 
 
 def make_scene(height: int, width: int, seed: int = 0, factor: int = 4) -> np.ndarray:
     """Scène linéaire RVB (H, W, 3) haute résolution (``factor`` × la taille capteur).
 
-    Contient des aplats (bruit), une mire de Siemens et deux réseaux à fréquence croissante
-    allant au-delà de la fréquence de Nyquist d'une image seule : c'est là que la
-    super-résolution doit faire la différence.
+    Contient des aplats (bruit), une mire de Siemens, un réseau de lignes à fréquence
+    croissante et une texture fine non périodique. Réseau, mire et texture vont au-delà de
+    la fréquence de Nyquist d'une image seule : c'est là que la super-résolution joue.
     """
-    del seed  # scène déterministe
     lr_h, lr_w = height // factor, width // factor
-    u, v, dy, dx, rad, star, gv, gh = _layout(height, width, lr_h, lr_w)
+    u, v, dy, dx, rad, star, gv, tex = _layout(height, width, lr_h, lr_w)
     img = np.zeros((height, width, 3))
 
     # Fond : aplats en damier de niveaux variés (bruit, estimation du bruit).
@@ -80,27 +93,31 @@ def make_scene(height: int, width: int, seed: int = 0, factor: int = 4) -> np.nd
 
     phase_u, _ = _chirp_phase(u, *GRATING_U, lr_w)
     img[gv] = (0.45 + 0.3 * np.sin(phase_u))[gv, None] * np.array([0.95, 1.0, 1.05])
-    phase_v, _ = _chirp_phase(v, *GRATING_H_U, lr_h)
-    img[gh] = (0.45 + 0.3 * np.sin(phase_v))[gh, None] * np.array([1.05, 1.0, 0.9])
+    texture = 0.42 + 0.12 * _fine_texture(height, width, factor, seed)
+    img[tex] = texture[tex, None] * np.array([1.05, 1.0, 0.9])
     return np.clip(img, 0.0, 0.95)
 
 
 def scene_regions(height: int, width: int, lr_h: int, lr_w: int) -> dict[str, np.ndarray]:
     """Zones de mesure sur une grille height x width (ex. la sortie ×2).
 
+    - ``super_resolution`` : texture fine non périodique (cas des vraies photos) ;
+    - ``motifs_periodiques`` : réseau et anneau de la mire dans la bande SR_BAND ; cas
+      difficile pour l'alignement local (risque de se caler sur la mauvaise période) ;
     - ``aplats`` : intérieur des aplats (mesure du bruit) ;
-    - ``super_resolution`` : réseaux et anneau de la mire dans la bande SR_BAND ;
-    - ``basses_freq`` : réseaux et mire sous la fréquence de Nyquist d'une image seule.
+    - ``basses_freq`` : mire sous la fréquence de Nyquist d'une image seule.
     """
-    u, v, dy, dx, rad, star, gv, gh = _layout(height, width, lr_h, lr_w)
+    u, v, dy, dx, rad, star, gv, tex = _layout(height, width, lr_h, lr_w)
     _, fu = _chirp_phase(u, *GRATING_U, lr_w)
-    _, fv = _chirp_phase(v, *GRATING_H_U, lr_h)
     with np.errstate(divide="ignore"):
         f_star = STAR_SPOKES / 2 / (2 * np.pi * np.maximum(rad, 1e-6))  # cycles / px
     lo, hi = SR_BAND
-    sr = (gv & (fu >= lo) & (fu <= hi)) | (gh & (fv >= lo) & (fv <= hi)) | (star & (f_star >= lo) & (f_star <= hi))
-    low = (gv & (fu < 0.35)) | (gh & (fv < 0.35)) | (star & (f_star < 0.35))
-    # Aplats : loin des bords des cases (3 px capteur), hors mire et réseaux.
+    periodic = (gv & (fu >= lo) & (fu <= hi)) | (star & (f_star >= lo) & (f_star <= hi))
+    low = star & (f_star < 0.35)
+    m = 4 / min(lr_h, lr_w)  # marge de 4 px capteur à l'intérieur de la texture
+    sr = (tex & (u > GRATING_U[0] + m) & (u < GRATING_U[1] - m)
+          & (v > TEXTURE_V[0] + m) & (v < TEXTURE_V[1] - m))
+    # Aplats : loin des bords des cases (3 px capteur), hors mire, réseau et texture.
     mu, mv = 3 / lr_w, 3 / lr_h
     cu, cv = (u * 8) % 1, (v * 6) % 1
     inner = (cu > mu * 8) & (cu < 1 - mu * 8) & (cv > mv * 6) & (cv < 1 - mv * 6)
@@ -108,9 +125,45 @@ def scene_regions(height: int, width: int, lr_h: int, lr_w: int) -> dict[str, np
     near_star = rad < (STAR_RADIUS + margin) * min(lr_h, lr_w)
     near_g = ((u > GRATING_U[0] - margin) & (u < GRATING_U[1] + margin)
               & (((v > GRATING_V[0] - margin) & (v < GRATING_V[1] + margin))
-                 | ((v > GRATING_H_U[0] - margin) & (v < GRATING_H_U[1] + margin))))
+                 | ((v > TEXTURE_V[0] - margin) & (v < TEXTURE_V[1] + margin))))
     flats = inner & ~near_star & ~near_g
-    return {"aplats": flats, "super_resolution": sr, "basses_freq": low}
+    return {"super_resolution": sr, "motifs_periodiques": periodic, "aplats": flats, "basses_freq": low}
+
+
+def shift_and_add_reference(burst: "SyntheticBurst", scale: float) -> np.ndarray:
+    """Fusion de référence connaissant les décalages exacts (RVB linéaire, CPU).
+
+    Simple accumulation pondérée (noyau gaussien) des échantillons Bayer de toutes les images
+    sur la grille de sortie. Sert uniquement de point de comparaison dans l'auto-test : elle
+    montre ce qu'on peut gagner quand l'alignement est parfait.
+    """
+    h, w = burst.raws[0].shape
+    oh, ow = round(h * scale), round(w * scale)
+    codes = np.array(_CFA_CODES[burst.cfa]).reshape(2, 2)
+    num = np.zeros((3, oh * ow))
+    den = np.zeros((3, oh * ow))
+    for raw, (dy, dx) in zip(burst.raws, burst.shifts):
+        x = (raw.astype(np.float64) - burst.black) / (burst.white - burst.black)
+        for i0 in range(2):
+            for j0 in range(2):
+                c = int(codes[i0, j0])
+                sigma = (0.5 if c == 1 else 0.7) * scale  # en pixels de sortie
+                ii, jj = np.mgrid[i0:h:2, j0:w:2]
+                py = (ii + 0.5 + dy) * scale - 0.5
+                px = (jj + 0.5 + dx) * scale - 0.5
+                val = x[i0::2, j0::2]
+                by, bx = np.floor(py).astype(int), np.floor(px).astype(int)
+                r = int(np.ceil(2 * sigma))
+                for oy in range(-r + 1, r + 1):
+                    for ox in range(-r + 1, r + 1):
+                        ty, tx = by + oy, bx + ox
+                        ok = (ty >= 0) & (ty < oh) & (tx >= 0) & (tx < ow)
+                        wgt = np.exp(-((ty - py) ** 2 + (tx - px) ** 2) / (2 * sigma ** 2))[ok]
+                        flat = (ty * ow + tx)[ok]
+                        num[c] += np.bincount(flat, wgt * val[ok], minlength=oh * ow)
+                        den[c] += np.bincount(flat, wgt, minlength=oh * ow)
+    out = num / np.maximum(den, 1e-12)
+    return out.reshape(3, oh, ow).transpose(1, 2, 0).astype(np.float32)
 
 
 def sample_frame(scene: np.ndarray, factor: int, shift: tuple[float, float]) -> np.ndarray:

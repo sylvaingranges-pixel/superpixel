@@ -81,18 +81,37 @@ def test_cli_writes_tiff_and_jpeg(burst_dir, tmp_path, monkeypatch, bilinear_eng
 
 
 def test_selftest_metrics_reward_true_super_resolution():
-    from drone_burst_sr.synthetic import make_burst
-
     import cv2
+
+    from drone_burst_sr.synthetic import make_burst
 
     burst = make_burst(256, 384, n_frames=1, alpha=1e-3, beta=1e-5)
     gt = (linear_to_srgb(burst.ground_truth(2.0)) * 65535).astype(np.uint16)
     single = (linear_to_srgb(burst.ground_truth(1.0)) * 65535).astype(np.uint16)
     single = cv2.resize(single, gt.shape[1::-1], interpolation=cv2.INTER_LANCZOS4)
     m = evaluate(gt, single, burst, 2.0)          # « fusion » parfaite vs image seule
-    assert m["plus_net"] and m["gains_db"]["super_resolution"] > 3
-    m = evaluate(single, single, burst, 2.0)      # aucune fusion : doit échouer
-    assert not m["plus_net"]
+    assert m["plus_net"] and m["gains_corr"]["texture"] > 0.3
+    blurred = cv2.GaussianBlur(gt, (0, 0), 0.8)   # un flou modéré ne doit pas être puni
+    assert evaluate(blurred, single, burst, 2.0)["gains_corr"]["texture"] > 0.2
+    assert not evaluate(single, single, burst, 2.0)["plus_net"]  # aucune fusion : échec
+
+
+def test_known_shift_reference_beats_single_frame(tmp_path):
+    """Valide la mesure : avec les vrais décalages, la fusion de référence gagne en détail."""
+    import dataclasses
+
+    from drone_burst_sr.dng_io import read_frame_info
+    from drone_burst_sr.pipeline import render_single
+    from drone_burst_sr.selftest import reference_fusion
+    from drone_burst_sr.synthetic import make_burst, write_burst
+
+    burst = make_burst(256, 384, n_frames=10, alpha=1e-3, beta=1e-5)
+    single = render_single(read_frame_info(write_burst(burst, tmp_path)[0]), (512, 768),
+                           RenderParams(sharpen_amount=0.0))
+    good = evaluate(reference_fusion(burst, 2.0), single, burst, 2.0)
+    assert good["plus_net"], good
+    wrong = dataclasses.replace(burst, shifts=[(-y, -x) for y, x in burst.shifts])
+    assert not evaluate(reference_fusion(wrong, 2.0), single, burst, 2.0)["plus_net"]
 
 
 def test_selftest_runs_end_to_end_with_fake_engine(tmp_path, bilinear_engine):
@@ -102,7 +121,7 @@ def test_selftest_runs_end_to_end_with_fake_engine(tmp_path, bilinear_engine):
                      engine_factory=lambda p: bilinear_engine(p.scale))
     assert not m["plus_net"]  # le moteur factice ne fusionne rien
     assert (tmp_path / "selftest_comparaison.png").exists()
-    assert "super_resolution" in format_report(m)
+    assert "détail texture" in format_report(m)
 
 
 @pytest.mark.gpu
