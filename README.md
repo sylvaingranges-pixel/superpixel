@@ -399,9 +399,18 @@ Ce qui est couvert :
 - ligne de commande, rendu et orientation ;
 - chaîne complète avec un moteur factice CPU.
 
-Le **test GPU** génère une rafale synthétique à décalages sous-pixel connus. Il vérifie que la
-fusion ×2 est plus fidèle à la vérité terrain (PSNR) et plus détaillée (part du détail fin
-retrouvée) qu'une seule image dématricée par rawpy puis agrandie. La CI GitHub Actions lance les
+Le **test GPU** (`python -m drone_burst_sr.selftest`) génère une rafale synthétique à décalages
+sous-pixel connus et la compare, **zone par zone**, à une seule image dématricée par rawpy puis
+agrandie. Il vérifie trois choses :
+
+- les lignes plus fines que la limite de Nyquist d'une image seule sont mieux restituées
+  (PSNR et part du détail fin retrouvée) ;
+- le bruit des aplats baisse ;
+- les détails déjà résolus ne se dégradent pas.
+
+Il refait aussi la fusion sans robustesse, pour repérer un rejet excessif, et écrit une planche
+de comparaison `selftest_comparaison.png`. Le rapport affiche le **taux de fusion** : la part des
+autres images réellement utilisée. La CI GitHub Actions lance les
 tests CPU sous Ubuntu et Windows.
 
 ## 8. Licence et citation

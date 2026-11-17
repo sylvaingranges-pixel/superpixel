@@ -19,41 +19,98 @@ SRGB_TO_XYZ = np.array([[0.4124564, 0.3575761, 0.1804375],
 _CFA_CODES = {"RGGB": (0, 1, 1, 2), "BGGR": (2, 1, 1, 0), "GRBG": (1, 0, 2, 1), "GBRG": (1, 2, 0, 1)}
 
 
-def make_scene(height: int, width: int, seed: int = 0) -> np.ndarray:
-    """Scène linéaire RVB (H, W, 3) riche en détails : mire, textures, aplats."""
-    rng = np.random.default_rng(seed)
-    y, x = np.mgrid[0:height, 0:width].astype(np.float64)
-    yn, xn = y / height, x / width
+# Géométrie de la scène, en coordonnées normalisées (u = x/largeur, v = y/hauteur) pour
+# pouvoir définir les mêmes zones de mesure sur n'importe quelle grille (basse ou haute
+# résolution). Les fréquences sont exprimées en cycles par pixel de l'image du capteur.
+STAR_CENTER = (0.5, 0.25)          # (v, u)
+STAR_RADIUS = 0.21                 # × min(hauteur, largeur)
+STAR_SPOKES = 96
+GRATING_V = (0.10, 0.42)           # réseau de lignes verticales (fréquence croissante selon u)
+GRATING_H_U = (0.58, 0.90)         # réseau de lignes horizontales (fréquence croissante selon v)
+GRATING_U = (0.55, 0.95)
+GRATING_F = (0.20, 0.85)           # cycles / pixel capteur ; > 0.5 = au-delà de Nyquist d'une image
+SR_BAND = (0.45, 0.85)             # bande où seule la fusion peut restituer le détail
+
+
+def _chirp_phase(t: np.ndarray, t0: float, t1: float, n_px: int) -> tuple[np.ndarray, np.ndarray]:
+    """Phase d'un chirp linéaire de GRATING_F[0] à GRATING_F[1] cycles/px sur [t0, t1]."""
+    f0, f1 = GRATING_F
+    d = np.clip(t - t0, 0, t1 - t0)
+    phase = 2 * np.pi * n_px * (f0 * d + (f1 - f0) * d * d / (2 * (t1 - t0)))
+    freq = f0 + (f1 - f0) * d / (t1 - t0)
+    return phase, freq
+
+
+def _layout(height: int, width: int, lr_h: int, lr_w: int):
+    """Grilles et masques des éléments de la scène sur une grille height x width."""
+    v = (np.arange(height)[:, None] + 0.5) / height
+    u = (np.arange(width)[None, :] + 0.5) / width
+    v, u = np.broadcast_arrays(v, u)
+    # Mire : distances en pixels capteur.
+    dy = (v - STAR_CENTER[0]) * lr_h
+    dx = (u - STAR_CENTER[1]) * lr_w
+    rad = np.hypot(dy, dx)
+    star = rad < STAR_RADIUS * min(lr_h, lr_w)
+    gv = (u >= GRATING_U[0]) & (u <= GRATING_U[1]) & (v >= GRATING_V[0]) & (v <= GRATING_V[1])
+    gh = (u >= GRATING_U[0]) & (u <= GRATING_U[1]) & (v >= GRATING_H_U[0]) & (v <= GRATING_H_U[1])
+    return u, v, dy, dx, rad, star, gv, gh
+
+
+def make_scene(height: int, width: int, seed: int = 0, factor: int = 4) -> np.ndarray:
+    """Scène linéaire RVB (H, W, 3) haute résolution (``factor`` × la taille capteur).
+
+    Contient des aplats (bruit), une mire de Siemens et deux réseaux à fréquence croissante
+    allant au-delà de la fréquence de Nyquist d'une image seule : c'est là que la
+    super-résolution doit faire la différence.
+    """
+    del seed  # scène déterministe
+    lr_h, lr_w = height // factor, width // factor
+    u, v, dy, dx, rad, star, gv, gh = _layout(height, width, lr_h, lr_w)
     img = np.zeros((height, width, 3))
 
-    # Fond : aplats en damier de niveaux variés (utile pour l'estimation du bruit).
+    # Fond : aplats en damier de niveaux variés (bruit, estimation du bruit).
     levels = np.linspace(0.03, 0.8, 12)
-    cell = max(height, width) // 8
-    idx = ((y // cell) * 5 + (x // cell)).astype(int) % len(levels)
+    idx = (np.floor(v * 6) * 5 + np.floor(u * 8)).astype(int) % len(levels)
     base = levels[idx]
     tint = np.stack([np.ones_like(base), 0.9 + 0.1 * np.sin(idx), 0.85 + 0.15 * np.cos(idx)], -1)
     img[:] = base[..., None] * tint
 
-    # Mire de Siemens (hautes fréquences radiales) au centre-gauche.
-    cy, cx, r = 0.5 * height, 0.3 * width, 0.22 * min(height, width)
-    ang = np.arctan2(y - cy, x - cx)
-    rad = np.hypot(y - cy, x - cx)
-    star = 0.45 + 0.35 * np.sign(np.sin(36 * ang))
-    m = rad < r
-    img[m] = star[m, None] * np.array([1.0, 0.95, 0.9])
+    ang = np.arctan2(dy, dx)
+    img[star] = (0.45 + 0.35 * np.sign(np.sin(STAR_SPOKES / 2 * ang)))[star, None] * np.array([1.0, 0.95, 0.9])
 
-    # Réseau de fines lignes à fréquence croissante (droite).
-    m2 = (xn > 0.6) & (yn > 0.15) & (yn < 0.45)
-    freq = 30 + 220 * (xn - 0.6) / 0.4
-    lines = 0.4 + 0.3 * np.sin(2 * np.pi * freq * xn)
-    img[m2] = lines[m2, None] * np.array([0.9, 1.0, 1.1])
-
-    # Texture aléatoire filtrée (bas droite).
-    m3 = (xn > 0.6) & (yn > 0.6) & (yn < 0.9)
-    tex = ndimage.gaussian_filter(rng.standard_normal((height, width)), 1.2)
-    tex = 0.35 + 0.15 * tex / tex.std()
-    img[m3] = tex[m3, None] * np.array([1.1, 1.0, 0.8])
+    phase_u, _ = _chirp_phase(u, *GRATING_U, lr_w)
+    img[gv] = (0.45 + 0.3 * np.sin(phase_u))[gv, None] * np.array([0.95, 1.0, 1.05])
+    phase_v, _ = _chirp_phase(v, *GRATING_H_U, lr_h)
+    img[gh] = (0.45 + 0.3 * np.sin(phase_v))[gh, None] * np.array([1.05, 1.0, 0.9])
     return np.clip(img, 0.0, 0.95)
+
+
+def scene_regions(height: int, width: int, lr_h: int, lr_w: int) -> dict[str, np.ndarray]:
+    """Zones de mesure sur une grille height x width (ex. la sortie ×2).
+
+    - ``aplats`` : intérieur des aplats (mesure du bruit) ;
+    - ``super_resolution`` : réseaux et anneau de la mire dans la bande SR_BAND ;
+    - ``basses_freq`` : réseaux et mire sous la fréquence de Nyquist d'une image seule.
+    """
+    u, v, dy, dx, rad, star, gv, gh = _layout(height, width, lr_h, lr_w)
+    _, fu = _chirp_phase(u, *GRATING_U, lr_w)
+    _, fv = _chirp_phase(v, *GRATING_H_U, lr_h)
+    with np.errstate(divide="ignore"):
+        f_star = STAR_SPOKES / 2 / (2 * np.pi * np.maximum(rad, 1e-6))  # cycles / px
+    lo, hi = SR_BAND
+    sr = (gv & (fu >= lo) & (fu <= hi)) | (gh & (fv >= lo) & (fv <= hi)) | (star & (f_star >= lo) & (f_star <= hi))
+    low = (gv & (fu < 0.35)) | (gh & (fv < 0.35)) | (star & (f_star < 0.35))
+    # Aplats : loin des bords des cases (3 px capteur), hors mire et réseaux.
+    mu, mv = 3 / lr_w, 3 / lr_h
+    cu, cv = (u * 8) % 1, (v * 6) % 1
+    inner = (cu > mu * 8) & (cu < 1 - mu * 8) & (cv > mv * 6) & (cv < 1 - mv * 6)
+    margin = 6 / min(lr_h, lr_w)
+    near_star = rad < (STAR_RADIUS + margin) * min(lr_h, lr_w)
+    near_g = ((u > GRATING_U[0] - margin) & (u < GRATING_U[1] + margin)
+              & (((v > GRATING_V[0] - margin) & (v < GRATING_V[1] + margin))
+                 | ((v > GRATING_H_U[0] - margin) & (v < GRATING_H_U[1] + margin))))
+    flats = inner & ~near_star & ~near_g
+    return {"aplats": flats, "super_resolution": sr, "basses_freq": low}
 
 
 def sample_frame(scene: np.ndarray, factor: int, shift: tuple[float, float]) -> np.ndarray:
@@ -109,7 +166,7 @@ def make_burst(height: int = 256, width: int = 384, n_frames: int = 10, factor: 
                shifts: Sequence[tuple[float, float]] | None = None,
                black: int = 256, white: int = 4095, seed: int = 0) -> SyntheticBurst:
     rng = np.random.default_rng(seed)
-    scene = make_scene(height * factor, width * factor, seed=seed)
+    scene = make_scene(height * factor, width * factor, seed=seed, factor=factor)
     if shifts is None:
         shifts = [(0.0, 0.0)] + [tuple(rng.uniform(-2.0, 2.0, 2)) for _ in range(n_frames - 1)]
     raws = []

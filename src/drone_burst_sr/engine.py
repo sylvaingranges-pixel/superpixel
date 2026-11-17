@@ -10,6 +10,7 @@ ne trouve pas les fichiers ``.DNG`` en majuscules et traite toujours l'image ent
 from __future__ import annotations
 
 import copy
+import warnings
 from contextlib import contextmanager
 from typing import Callable
 
@@ -58,7 +59,7 @@ def build_config(params: FusionParams, noise: NoiseModel):
     rob = cfg.robustness
     rob.enabled = bool(params.robustness)
     rob.noise_correction = bool(params.robustness and params.noise_correction)
-    rob.save_mask = False
+    rob.save_mask = rob.enabled  # carte de robustesse cumulée : sert au diagnostic (taux de fusion)
     rob.t, rob.s1, rob.s2, rob.Mt = params.t, params.s1, params.s2, params.mt
 
     cfg.merging.kernel_type = params.kernel_type
@@ -84,6 +85,14 @@ class UpstreamEngine:
         self.noise = noise
         self.config = None
         self.snr: float | None = None
+        self.notes: list[str] = []          # remarques à remonter à l'utilisateur
+        self._rob_sum = 0.0                 # robustesse cumulée (somme) sur toutes les tuiles
+        self._rob_count = 0
+
+    @property
+    def robustness_mean(self) -> float | None:
+        """Part moyenne des autres images effectivement fusionnée (1 = tout, 0 = tout rejeté)."""
+        return self._rob_sum / self._rob_count if self._rob_count else None
 
     def prepare(self, ref_rggb: np.ndarray, status: Callable[[str], None] | None = None) -> None:
         from handheld_super_resolution.params import runtime_config, update_snr_config
@@ -103,7 +112,12 @@ class UpstreamEngine:
         step = max(1, int(np.sqrt(ref_rggb.size / 4e6)))
         sub = _subsample_cfa(ref_rggb, step)
         self.snr = float(estimate_image_snr(sub, self.noise.alpha, self.noise.beta))
-        update_snr_config(cfg, self.snr)
+        if not 6 <= self.snr <= 30:
+            self.notes.append(f"SNR mesuré {self.snr:.1f} dB hors de la plage de réglage de "
+                              "l'algorithme (6-30 dB) : réglages de la borne la plus proche.")
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Clipped snr")
+            update_snr_config(cfg, self.snr)
         cfg.noise_model.sigma_sq_curve = np.asarray(sigma, dtype=np.float32).tolist()
         cfg.noise_model.d_sq_curve = np.asarray(dsq, dtype=np.float32).tolist()
         self.config = cfg
@@ -119,14 +133,21 @@ class UpstreamEngine:
         cfg = copy.deepcopy(self.config)
         sanitize_config(cfg, ref.shape)
         try:
-            with _count_merges(hsr, on_frame):
-                out, _ = hsr.main(ref.astype(DEFAULT_NUMPY_FLOAT_TYPE, copy=False),
-                                  comp.astype(DEFAULT_NUMPY_FLOAT_TYPE, copy=False), cfg)
+            with _count_merges(hsr, on_frame), warnings.catch_warnings():
+                # Petites images : Numba signale une occupation GPU faible, sans conséquence.
+                warnings.filterwarnings("ignore", message="Grid size")
+                out, debug = hsr.main(ref.astype(DEFAULT_NUMPY_FLOAT_TYPE, copy=False),
+                                      comp.astype(DEFAULT_NUMPY_FLOAT_TYPE, copy=False), cfg)
         except Exception as error:  # noqa: BLE001
             if _is_oom(error):
                 free_gpu_memory()
                 raise GpuOutOfMemory(str(error)) from error
             raise
+        acc = debug.get("accumulated robustness") if isinstance(debug, dict) else None
+        if acc is not None and comp.shape[0] > 0:
+            acc = np.asarray(acc, dtype=np.float64)
+            self._rob_sum += float(np.nansum(acc)) / comp.shape[0]
+            self._rob_count += int(acc.size)
         return out
 
     def describe_config(self) -> str:

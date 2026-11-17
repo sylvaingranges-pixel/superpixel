@@ -80,22 +80,35 @@ def test_cli_writes_tiff_and_jpeg(burst_dir, tmp_path, monkeypatch, bilinear_eng
     assert out.with_suffix(".jpg").exists()
 
 
-def test_selftest_metrics_rank_ground_truth_first():
+def test_selftest_metrics_reward_true_super_resolution():
     from drone_burst_sr.synthetic import make_burst
 
-    burst = make_burst(128, 192, n_frames=1)
-    gt = (linear_to_srgb(burst.ground_truth(2.0)) * 65535).astype(np.uint16)
-    blurry = (linear_to_srgb(burst.ground_truth(0.5)) * 65535).astype(np.uint16)
     import cv2
 
-    blurry = cv2.resize(blurry, gt.shape[1::-1], interpolation=cv2.INTER_LINEAR)
-    m = evaluate(gt, blurry, burst, 2.0)
-    assert m["plus_net"] and m["fusion"].hf_ratio > 0.95 > m["image_seule"].hf_ratio
+    burst = make_burst(256, 384, n_frames=1, alpha=1e-3, beta=1e-5)
+    gt = (linear_to_srgb(burst.ground_truth(2.0)) * 65535).astype(np.uint16)
+    single = (linear_to_srgb(burst.ground_truth(1.0)) * 65535).astype(np.uint16)
+    single = cv2.resize(single, gt.shape[1::-1], interpolation=cv2.INTER_LANCZOS4)
+    m = evaluate(gt, single, burst, 2.0)          # « fusion » parfaite vs image seule
+    assert m["plus_net"] and m["gains_db"]["super_resolution"] > 3
+    m = evaluate(single, single, burst, 2.0)      # aucune fusion : doit échouer
+    assert not m["plus_net"]
+
+
+def test_selftest_runs_end_to_end_with_fake_engine(tmp_path, bilinear_engine):
+    from drone_burst_sr.selftest import format_report
+
+    m = run_selftest(height=256, width=384, n_frames=4, out_dir=tmp_path,
+                     engine_factory=lambda p: bilinear_engine(p.scale))
+    assert not m["plus_net"]  # le moteur factice ne fusionne rien
+    assert (tmp_path / "selftest_comparaison.png").exists()
+    assert "super_resolution" in format_report(m)
 
 
 @pytest.mark.gpu
 def test_gpu_fusion_is_sharper_than_single_frame():
     """Rafale synthétique à décalages sous-pixel connus : la fusion ×2 doit battre l'image seule."""
-    m = run_selftest(scale=2.0, n_frames=10)
-    assert m["plus_net"], m
-    assert m["gain_psnr_db"] > 0.5, m
+    from drone_burst_sr.selftest import format_report
+
+    m = run_selftest(scale=2.0, n_frames=10, out_dir=None)
+    assert m["plus_net"], format_report(m)

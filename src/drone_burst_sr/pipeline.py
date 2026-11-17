@@ -175,6 +175,7 @@ class FusionResult:
     n_frames: int
     scale: float
     config_dump: str = ""
+    robustness_mean: float | None = None
 
     def report(self) -> str:
         h, w = self.fused.shape[:2]
@@ -184,6 +185,8 @@ class FusionResult:
             f"→ {w}x{h} ({w * h / 1e6:.0f} MP)",
             self.noise.describe(),
             f"SNR estimé : {self.snr:.1f} dB" if self.snr is not None else "",
+            (f"Taux de fusion (robustesse moyenne) : {self.robustness_mean:.0%} des autres images"
+             if self.robustness_mean is not None else ""),
             f"Tuiles : {self.tiles}" + (f" de {self.tile_size} px" if self.tile_size else " (image entière)"),
             f"Durée : {self.seconds:.0f} s",
         ]
@@ -289,6 +292,13 @@ def fuse_burst(burst: Burst, params: FusionParams, progress: ProgressFn = _noop,
             issues.append(Issue("info", f"Mémoire GPU insuffisante : nouvel essai avec des tuiles "
                                         f"de {tile_size} px."))
 
+    issues += [Issue("info", n) for n in getattr(engine, "notes", [])]
+    rob = getattr(engine, "robustness_mean", None)
+    if rob is not None and rob < 0.3:
+        issues.append(Issue("avertissement",
+                            f"La robustesse n'a gardé que {rob:.0%} des autres images : la fusion "
+                            "ressemble surtout à l'image de référence (mouvement, parallaxe, "
+                            "exposition variable, ou paramètres t/s1/s2 trop stricts)."))
     nan_count = int(np.count_nonzero(~np.isfinite(linear)))
     if nan_count:
         warnings.warn(f"{nan_count} valeurs non finies remplacées par 0")
@@ -308,6 +318,7 @@ def fuse_burst(burst: Burst, params: FusionParams, progress: ProgressFn = _noop,
         seconds=time.perf_counter() - t0, reference_name=burst.reference_name, n_frames=n,
         scale=params.scale,
         config_dump=engine.describe_config() if hasattr(engine, "describe_config") else "",
+        robustness_mean=getattr(engine, "robustness_mean", None),
     )
 
 
